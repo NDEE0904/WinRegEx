@@ -28,6 +28,7 @@ is complete.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -57,9 +58,13 @@ _ACCEPTED_HIVE_NAMES = {"sam", "system", "security", "software", "ntuser.dat", "
 _ACCEPTED_EVTX_NAMES = {"application.evtx", "system.evtx", "security.evtx"}
 _ACCEPTED_ALL = _ACCEPTED_HIVE_NAMES | _ACCEPTED_EVTX_NAMES
 
+# Regex for NTUSER variants: NTUSER.DAT, NTUSER_Monica.DAT, NTUSER_user1.DAT, etc.
+# This mirrors _NTUSER_FILENAME_RE in core/registry_parser.py.
+_NTUSER_FILENAME_RE = re.compile(r"^ntuser(?:_[^.]*)?\.dat$", re.IGNORECASE)
+
 _REJECTION_MESSAGE = (
     "WinRegEx accepts only Windows Registry hive files\n"
-    "(SAM, SYSTEM, SECURITY, SOFTWARE, NTUSER.DAT, DEFAULT)\n"
+    "(SAM, SYSTEM, SECURITY, SOFTWARE, NTUSER*.DAT, DEFAULT)\n"
     "and Windows Event Logs\n"
     "(Application.evtx, System.evtx, Security.evtx).\n\n"
     "Please select a valid evidence file."
@@ -67,8 +72,20 @@ _REJECTION_MESSAGE = (
 
 
 def _is_accepted_evidence_file(filename: str) -> bool:
-    """Return True if filename matches the accepted evidence file whitelist."""
-    return filename.strip().lower() in _ACCEPTED_ALL
+    """Return True if filename matches the accepted evidence file whitelist.
+
+    Handles exact-name hives (SAM, SYSTEM, etc.), NTUSER variants with
+    optional username suffixes (NTUSER_Monica.DAT), and event logs.
+    """
+    name = filename.strip()
+    # Exact match (case-insensitive) against the fixed whitelist
+    if name.lower() in _ACCEPTED_ALL:
+        return True
+    # NTUSER variant pattern: NTUSER_<username>.DAT
+    if _NTUSER_FILENAME_RE.match(name):
+        return True
+    return False
+
 
 
 class SplashWindow(tk.Toplevel):
