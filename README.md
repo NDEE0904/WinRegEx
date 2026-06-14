@@ -1,11 +1,10 @@
-# RegHive Forensic Analyzer
+# Window Registry Examination
 
 Offline Windows Registry forensic analysis tool with hash-verified
 chain-of-custody, automatic decoding of encoded values, real-time
 examiner action logging, and exportable PDF / CSV / JSON reports.
 
-> Final-Year Project, BSc-CNISE - University of Dodoma
-> Group 12 - 2025/2026
+
 
 ---
 
@@ -207,12 +206,4 @@ RegHiveForensicAnalyzer/
 - `.evtx` parsing requires `python-evtx`; PDF export requires
   `reportlab`. Both are listed in `requirements.txt`.
 
-## Group Members
 
-- NYAMIZI SHIJA - T22-03-02725
-- DISMAS NINDI - T22-03-02246
-- OXTRA KABANZA - T22-03-02518
-- CLARA HHANDO - T22-03-06084
-- HASSANI NDEE - T22-03-11585
-
-Supervisor: Mr. Hamisi Fereji
