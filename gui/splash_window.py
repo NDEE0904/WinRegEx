@@ -345,28 +345,59 @@ class SplashWindow(tk.Toplevel):
     # Update 4: Extraction Hashes File (.sha256) browse
     # ------------------------------------------------------------------
     def _browse_hash_file(self) -> None:
-        """Select and parse a .sha256 hash file."""
+        """Select and parse a .sha256 hash file.
+
+        Supports two formats:
+        1. Standard sha256sum output:  ``<hash>  <filepath>``
+           (64-char hex, two spaces, then a file path)
+        2. Colon-delimited:  ``<filename>:<hash>``
+
+        File paths are normalised to basenames so that entries like
+        ``registry_hives/SYSTEM`` match a file uploaded as ``SYSTEM``.
+        """
         path = filedialog.askopenfilename(
             parent=self,
             title="Select extraction hashes file (.sha256)",
             filetypes=[("SHA256 hash files", "*.sha256"),
+                       ("Text files", "*.txt"),
                        ("All files", "*")],
         )
         if not path:
             return
         try:
-            loaded = {}
+            loaded: Dict[str, str] = {}
             with open(path, "r", encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
-                    if not line or ":" not in line:
+                    if not line:
                         continue
-                    parts = line.rsplit(":", 1)
-                    if len(parts) == 2:
-                        fname = parts[0].strip()
-                        hval = parts[1].strip().lower()
-                        if len(hval) == 64 and is_valid_sha256(hval):
-                            loaded[fname] = hval
+
+                    # --- Format 1: sha256sum output  "hash  filepath" ---
+                    # The canonical separator is two spaces; some tools
+                    # use one space or a space-asterisk.
+                    if "  " in line:
+                        parts = line.split("  ", 1)
+                        if len(parts) == 2:
+                            hval = parts[0].strip().lower()
+                            fpath = parts[1].strip().lstrip("*")
+                            if len(hval) == 64 and is_valid_sha256(hval):
+                                # Store by basename so sub-dir prefixes
+                                # (e.g. "registry_hives/SYSTEM") still
+                                # match the uploaded file "SYSTEM".
+                                fname = os.path.basename(fpath)
+                                loaded[fname] = hval
+                                continue
+
+                    # --- Format 2: colon-delimited  "filename:hash" ---
+                    if ":" in line:
+                        parts = line.rsplit(":", 1)
+                        if len(parts) == 2:
+                            fname = os.path.basename(parts[0].strip())
+                            hval = parts[1].strip().lower()
+                            if len(hval) == 64 and is_valid_sha256(hval):
+                                loaded[fname] = hval
+                                continue
+
             self._hash_dictionary = loaded
             self._hash_path_var.set(
                 f"✓ {os.path.basename(path)} "
