@@ -1,0 +1,17 @@
+# RegHive Forensic Analyzer - Python dependencies
+# Tested on Python 3.10+. tkinter ships with the stdlib on Windows.
+
+# Registry hive parsing (offline / no Win32 dependency)
+python-registry>=1.3.1
+
+# Windows event log (.evtx) parsing
+# evtx (Rust-backed) is ~100x faster and the preferred backend.
+# python-evtx is the pure-Python fallback when evtx can't be installed.
+evtx>=0.8.0
+python-evtx>=0.7.4
+
+# PDF report generation
+reportlab>=4.0.0
+
+# Image handling (logo / branding)
+Pillow>=10.0.0

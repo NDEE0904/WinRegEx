@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+
+.venv/
+venv/
+env/
+.env
+
+# forensic evidence / registry files - never upload
+DEFAULT
+SAM
+SECURITY
+SOFTWARE
+SYSTEM
+NTUSER.DAT
+*.evtx
+
+# temporary files
+.task_spec.txt
+.test_output.txt
+Pasted image.png
