@@ -570,6 +570,11 @@ def export_pdf(bundle: ReportBundle, output_path: str | Path) -> str:
         "mono", parent=styles["BodyText"], fontSize=8, leading=10,
         fontName="Courier",
     )
+    mono_hdr = rl["ParagraphStyle"](
+        "mono_hdr", parent=styles["BodyText"], fontSize=8, leading=10,
+        fontName="Courier-Bold",
+        textColor=colors.white,
+    )
     forensic_box = rl["ParagraphStyle"](
         "fbox", parent=styles["BodyText"], fontSize=9, leading=12,
         leftIndent=8, borderPadding=6,
@@ -591,11 +596,8 @@ def export_pdf(bundle: ReportBundle, output_path: str | Path) -> str:
         ["Case Name:",        _safe_text(bundle.case_name) or "(not specified)"],
         ["Case Number:",      _safe_text(bundle.case_number) or "(not specified)"],
         ["Examiner:",         _safe_text(bundle.examiner) or "(not specified)"],
-        ["Evidence Source:",  _safe_text(bundle.evidence_source, max_len=120)
-                              or "(not specified)"],
         ["Date of Analysis:", bundle.date_of_analysis],
         ["Report Generated:", bundle.export_timestamp],
-        ["", ""],
         ["Tool:",             TOOL_NAME],
         ["Tool Version:",     TOOL_VERSION],
     ]
@@ -793,50 +795,65 @@ def export_pdf(bundle: ReportBundle, output_path: str | Path) -> str:
             cols = _resolve_columns(art)
             suppressed = [c for c in all_base if c not in cols]
 
-            data_rows = [[c for c in cols]]
-            row_flags = []
-            display_rows = art.result.rows[:200]
-            for row in display_rows:
-                cells = [_safe_text(_row_value_for(row, c), max_len=200)
-                         for c in cols]
-                data_rows.append([Paragraph(c, mono) for c in cells])
-                row_flags.append(row.flag)
+            # ------------------------------------------------------------------
+            # Empty-table guard: if _resolve_columns() returns an empty list
+            # OR the artifact has no rows at all, do NOT construct a Table()
+            # (reportlab requires at least 1 row AND 1 column). This handles
+            # three failure paths uniformly:
+            #   • extractor error with no columns set
+            #   • hive section with no findings
+            #   • every column suppressed by the column-suppression logic
+            # ------------------------------------------------------------------
+            if not cols or not art.result.rows:
+                story.append(Paragraph(
+                    "<i>No meaningful data extracted for this artifact.</i>",
+                    body))
+            else:
+                data_rows = [[Paragraph(_safe_text(c), mono_hdr) for c in cols]]
+                row_flags = []
+                display_rows = art.result.rows[:200]
+                for row in display_rows:
+                    cells = [_safe_text(_row_value_for(row, c), max_len=200)
+                             for c in cols]
+                    data_rows.append([Paragraph(c, mono) for c in cells])
+                    row_flags.append(row.flag)
 
-            available_width = 17 * cm
-            n = max(len(cols), 1)
-            col_widths = [available_width / n] * n
-            t = Table(data_rows, colWidths=col_widths, repeatRows=1)
-            ts = [
-                ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f3a5f")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]
-            for ridx, fl in enumerate(row_flags, start=1):
-                if fl in flag_color_map:
-                    ts.append(("BACKGROUND", (0, ridx), (-1, ridx),
-                               flag_color_map[fl]))
-            t.setStyle(TableStyle(ts))
-            story.append(t)
-            if suppressed:
-                omit_style = rl["ParagraphStyle"](
-                    "omit_note", parent=styles["BodyText"],
-                    fontSize=8, leading=10, fontName="Helvetica-Oblique",
-                    textColor=colors.HexColor("#555555"),
-                )
-                story.append(Paragraph(
-                    f"<i>Columns suppressed (all values empty): "
-                    f"{', '.join(_safe_text(c) for c in suppressed)}</i>",
-                    omit_style))
-            if len(art.result.rows) > 200:
-                story.append(Paragraph(
-                    f"<i>... showing first 200 of {len(art.result.rows)} "
-                    f"rows. See JSON export for the full dataset.</i>", body))
+                available_width = 17 * cm
+                n = len(cols)  # guaranteed >= 1 at this point
+                col_widths = [available_width / n] * n
+                t = Table(data_rows, colWidths=col_widths, repeatRows=1)
+                ts = [
+                    ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f3a5f")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+                for ridx, fl in enumerate(row_flags, start=1):
+                    if fl in flag_color_map:
+                        ts.append(("BACKGROUND", (0, ridx), (-1, ridx),
+                                   flag_color_map[fl]))
+                t.setStyle(TableStyle(ts))
+                story.append(t)
+                if suppressed:
+                    omit_style = rl["ParagraphStyle"](
+                        "omit_note", parent=styles["BodyText"],
+                        fontSize=8, leading=10, fontName="Helvetica-Oblique",
+                        textColor=colors.HexColor("#555555"),
+                    )
+                    story.append(Paragraph(
+                        f"<i>Columns suppressed (all values empty): "
+                        f"{', '.join(_safe_text(c) for c in suppressed)}</i>",
+                        omit_style))
+                if len(art.result.rows) > 200:
+                    story.append(Paragraph(
+                        f"<i>... showing first 200 of {len(art.result.rows)} "
+                        f"rows. See JSON export for the full dataset.</i>",
+                        body))
 
         story.append(Spacer(1, 0.2 * cm))
         story.append(Paragraph("Forensic Context", h2))

@@ -668,25 +668,6 @@ class SplashWindow(tk.Toplevel):
                     parent=self)
                 return
 
-        # Warn (but do not block) if staging dir is under /tmp
-        staging = self._staging_dir or ""
-        if staging.startswith("/tmp/") or staging.startswith("/tmp\\"):
-            confirm = messagebox.askyesno(
-                "Temporary path detected",
-                f"The evidence staging directory appears to be a temporary "
-                f"system path:\n\n  {staging}\n\n"
-                "Temporary paths are typically cleaned up by the OS on reboot "
-                "and are not suitable as permanent evidence identifiers in "
-                "court-admissible reports.\n\n"
-                "Are you sure you want to continue with this path?",
-                icon="warning",
-                parent=self)
-            if not confirm:
-                self._set_status(
-                    "Analysis cancelled. Please relocate the evidence files "
-                    "to a documented evidence store.", "warn")
-                return
-
         # Configure logger and record acquisition metadata
         self._logger.set_case_metadata(case, examiner)
         self._logger.log_case_opened(case, examiner)
