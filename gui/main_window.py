@@ -717,6 +717,7 @@ class MainWindow:
             evidence_source=self._evidence_folder,
             loaded_hives=list(self._loaded_hive_summaries),
             examiner_summary_notes="",  # reserved for a future Case Notes UI
+            extraction_report_json=self._extraction_report_json,
         )
 
         try:

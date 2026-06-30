@@ -197,6 +197,22 @@ class ArtifactView(tk.Frame):
             base_cols = list(result.rows[0].fields.keys())
         base_cols = [str(c) for c in base_cols]
 
+        # Drop base columns that are entirely empty across every row
+        _na = frozenset({"", "n/a", "\u2014", "-", "none", "null", "unknown"})
+
+        def _cell(row, col: str) -> str:
+            if col == "Interpretation":
+                return row.interpretation or ""
+            if col == "Flag":
+                return row.flag or ""
+            return str(row.fields.get(col, ""))
+
+        if result.rows:
+            base_cols = [
+                col for col in base_cols
+                if not all(_cell(r, col).strip().lower() in _na for r in result.rows)
+            ]
+
         any_interp = any((row.interpretation or "").strip() for row in result.rows)
         any_flag = any((row.flag or "").strip() for row in result.rows)
 

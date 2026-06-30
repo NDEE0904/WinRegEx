@@ -617,6 +617,76 @@ class SplashWindow(tk.Toplevel):
                 "error")
             return
 
+        # --- Bug 8: validate case identity fields against placeholder patterns ---
+        _DENY = {
+            "test", "testing", "fgfgf", "fgfg", "asdf", "asdfg", "asd",
+            "foo", "bar", "baz", "xxx", "zzz", "abc", "123", "placeholder",
+            "unknown", "n/a", "none", "temp", "tmp",
+        }
+
+        def _looks_like_placeholder(value: str, label: str) -> str | None:
+            """Return a warning message if value looks like a placeholder, else None."""
+            v = value.strip()
+            if len(v) < 3:
+                return (
+                    f"{label} is too short (minimum 3 characters). "
+                    f"Please enter a real value."
+                )
+            if len(set(v.lower())) <= 2:
+                return (
+                    f"{label} appears to be a repeated-character placeholder "
+                    f"('{v}'). Please enter a real value."
+                )
+            if v.lower() in _DENY:
+                return (
+                    f"{label} matches a known placeholder value ('{v}'). "
+                    f"Please enter a real value."
+                )
+            return None
+
+        for field_val, field_label in [
+            (examiner, "Examiner Name"),
+            (case, "Case Name"),
+        ]:
+            msg = _looks_like_placeholder(field_val, field_label)
+            if msg:
+                self._set_status(msg, "error")
+                messagebox.showwarning(
+                    "Invalid case metadata",
+                    msg + "\n\nForensic reports must contain accurate metadata.",
+                    parent=self)
+                return
+
+        # Case number is optional but validate if provided
+        if case_number:
+            msg = _looks_like_placeholder(case_number, "Case Number")
+            if msg:
+                self._set_status(msg, "error")
+                messagebox.showwarning(
+                    "Invalid case metadata",
+                    msg + "\n\nForensic reports must contain accurate metadata.",
+                    parent=self)
+                return
+
+        # Warn (but do not block) if staging dir is under /tmp
+        staging = self._staging_dir or ""
+        if staging.startswith("/tmp/") or staging.startswith("/tmp\\"):
+            confirm = messagebox.askyesno(
+                "Temporary path detected",
+                f"The evidence staging directory appears to be a temporary "
+                f"system path:\n\n  {staging}\n\n"
+                "Temporary paths are typically cleaned up by the OS on reboot "
+                "and are not suitable as permanent evidence identifiers in "
+                "court-admissible reports.\n\n"
+                "Are you sure you want to continue with this path?",
+                icon="warning",
+                parent=self)
+            if not confirm:
+                self._set_status(
+                    "Analysis cancelled. Please relocate the evidence files "
+                    "to a documented evidence store.", "warn")
+                return
+
         # Configure logger and record acquisition metadata
         self._logger.set_case_metadata(case, examiner)
         self._logger.log_case_opened(case, examiner)

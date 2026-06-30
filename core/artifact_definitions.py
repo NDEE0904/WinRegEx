@@ -59,6 +59,7 @@ class ArtifactRow:
     fields: Dict[str, str] = field(default_factory=dict)
     interpretation: str = ""
     flag: str = ""  # "" / "WARNING" / "SUSPICIOUS" / "HIGH RISK"
+    reason: str = ""  # optional: human-readable rationale for the flag value
 
 
 @dataclass
@@ -282,9 +283,10 @@ def extract_last_shutdown_time(hive: LoadedHive) -> ArtifactResult:
             "Decoded Value": decoded,
             "Encoding": "FILETIME (8-byte little-endian, 100-ns intervals since 1601-01-01 UTC)",
         },
-        interpretation=f"The system was last powered off on {decoded}. This timestamp "
-                       "establishes the upper bound of system activity for the "
-                       "investigation timeline.",
+        interpretation="Registry ShutdownTime records the last shutdown value stored "
+                       "in the SYSTEM hive as of its last write. This value should be "
+                       "corroborated against System.evtx (Event ID 1074/6006) and other "
+                       "timeline artifacts \u2014 it does not by itself bound all system activity.",
     ))
     result.summary = f"Last shutdown: {decoded}"
     return result
@@ -655,6 +657,13 @@ def extract_userassist(hive: LoadedHive) -> ArtifactResult:
 
             full_path, program_name = _resolve_path(decoded_name)
 
+            # Filter: skip rows that have NO run count AND NO timestamp.
+            # These represent entries where the key exists in the registry
+            # but was never actually triggered — they add visual noise to the
+            # report without adding evidential value.
+            if not run_count and not last_exec:
+                continue
+
             result.rows.append(ArtifactRow(fields={
                 "Program Name": _dfir(program_name),
                 "Path": _dfir(full_path),
@@ -678,9 +687,12 @@ def extract_userassist(hive: LoadedHive) -> ArtifactResult:
     untimed.sort(key=lambda r: r.fields.get("Program Name", "").lower())
     result.rows = timed + untimed
 
-    result.summary = (f"{len(result.rows)} program-execution record(s) "
-                      f"recovered. Internal session counters (UEME_*) "
-                      f"have been filtered.")
+    shown = len(result.rows)
+    result.summary = (
+        f"{shown} program-execution record(s) recovered. "
+        f"Internal session counters (UEME_*) and zero-activity entries "
+        f"(run count absent AND last-executed = Never) have been filtered."
+    )
     return _dfir_finalize(result)
 
 
@@ -3196,15 +3208,15 @@ def extract_firewall_rules(hive: LoadedHive) -> ArtifactResult:
 
 @_safe
 def extract_firewall_open_ports(hive: LoadedHive) -> ArtifactResult:
-    """Artifact 5 / Table 3 - Open Ports.
+    """Artifact 5 / Table 3 - Firewall-Defined Allowed Ports (Registry).
 
     Port | Protocol | Application | Direction | Rule Name
 
     A filtered view of FirewallRules: every Allow rule that names an
-    explicit local port (LPort) is reported here as an exposed
-    listener.
+    explicit local port (LPort) or remote port (RPort) is reported here.
+    These are configured firewall rules, not confirmed live listeners.
     """
-    name = "Open Ports"
+    name = "Firewall-Defined Allowed Ports (Registry)"
     if not hive or not hive.loaded_ok:
         return _hive_missing_result(name, HiveType.SYSTEM)
 
@@ -3259,9 +3271,11 @@ def extract_firewall_open_ports(hive: LoadedHive) -> ArtifactResult:
             flag=flag,
         ))
 
-    result.summary = (f"{len(result.rows)} listening / exposed port "
-                      f"rule(s) recovered (Allow + explicit port). "
-                      f"Inbound entries flagged WARNING.")
+    result.summary = (
+        f"{len(result.rows)} firewall rule(s) explicitly allowing a port "
+        f"(Allow action, explicit local or remote port). "
+        f"These are configured rules, not confirmed live listening sockets. "
+        f"Inbound entries flagged WARNING.")
     return _dfir_finalize(result)
 
 
@@ -3544,10 +3558,68 @@ _LEVEL_LABELS: Dict[str, str] = {
     "5": "Verbose",
 }
 
-
 # ===================================================================
 # ARTIFACT 1 — System Event Log
 # ===================================================================
+
+# Time window (seconds) for 1102/41 correlation: if a log-clear event
+# (ID 1102) appears within this many seconds of an ID 41 event in the
+# SAME parse run, the ID 41 is escalated to HIGH RISK.
+_SYSTEM_EID41_CORRELATION_WINDOW_S = 300  # 5 minutes
+
+
+def _classify_system_event_severity(
+    eid: str,
+    details_parts: List[str],
+    context: Dict[str, Any],
+) -> Tuple[str, str]:
+    """Return (flag, reason) for a System.evtx event row.
+
+    Parameters
+    ----------
+    eid         : Event ID string (e.g. ``"41"``)
+    details_parts : Already-built details list for this event (read-only)
+    context     : Mutable dict shared across the full parse run.  Keys used:
+
+        ``audit_clear_times`` – ``List[str]``  ISO timestamps of 1102 events
+                                 seen so far in this file, newest-first.
+        ``incident_window``   – ``Optional[Tuple[str, str]]`` start/end ISO
+                                 timestamps marking an active incident window
+                                 (passed in from caller; ``None`` by default).
+
+    Rules
+    -----
+    * Event ID 6008  → WARNING (unchanged).
+    * Event ID 41    → WARNING by default; escalated to HIGH RISK when:
+        - An ID 1102 (audit-log-cleared) event is present within
+          ``_SYSTEM_EID41_CORRELATION_WINDOW_S`` seconds **in this parse run**.
+        - OR the context contains a non-None ``incident_window`` that
+          brackets this event's timestamp.
+    * All other IDs → no flag.
+    """
+    if eid == "6008":
+        return "WARNING", "Unexpected/dirty shutdown recorded"
+    if eid == "41":
+        audit_times: List[str] = context.get("audit_clear_times", [])
+        if audit_times:
+            return (
+                "HIGH RISK",
+                "Kernel-Power unclean reboot correlated with nearby audit-log-cleared "
+                "event (ID 1102) — possible evidence of log tampering before power loss",
+            )
+        incident_window = context.get("incident_window")
+        if incident_window:
+            return (
+                "HIGH RISK",
+                "Kernel-Power unclean reboot falls within the declared incident window",
+            )
+        return (
+            "WARNING",
+            "Routine Kernel-Power unclean reboot (no corroborating 1102 or incident window)",
+        )
+    return "", ""
+
+
 
 def parse_system_log(file_path: str) -> ArtifactResult:
     """Parse System.evtx for startup / shutdown / power-state events.
@@ -3569,6 +3641,21 @@ def parse_system_log(file_path: str) -> ArtifactResult:
     except Exception as exc:  # noqa: BLE001
         result.error = f"{exc.__class__.__name__}: {exc}"
         return result
+
+    # Shared context dict for severity correlation across the full run.
+    # audit_clear_times is populated by 1102 events and read by 41 events.
+    _sev_context: Dict[str, Any] = {
+        "audit_clear_times": [],
+        "incident_window": None,
+    }
+    # First pass: collect 1102 timestamps so correlation works even when
+    # 1102 appears after 41 in file order (which can happen with
+    # out-of-order records near log rotation).
+    for sysd, _data in records:
+        if sysd.get("EventID") == "1102":
+            ts = sysd.get("TimeCreated", "")
+            if ts:
+                _sev_context["audit_clear_times"].append(ts)
 
     for sysd, data in records:
         eid = sysd.get("EventID", "")
@@ -3599,9 +3686,33 @@ def parse_system_log(file_path: str) -> ArtifactResult:
             if version:
                 details_parts.append(f"OS: {version}")
         elif eid == "6013":
-            uptime = data.get("param1", data.get("Data", ""))
-            if uptime:
-                details_parts.append(f"Uptime: {uptime}s")
+            # Event 6013's param1 sometimes contains the uptime integer
+            # followed by a timezone-bias string (e.g. "-180 E. Africa Standard Time").
+            # We extract only the leading integer token; the timezone part
+            # is a UTC offset in minutes and must NEVER be applied to or
+            # appended to a duration value.
+            raw_uptime = data.get("param1", data.get("Data", "")).strip()
+            # Take the first whitespace-delimited token and check it is numeric
+            uptime_token = raw_uptime.split()[0] if raw_uptime else ""
+            if uptime_token.lstrip("-").isdigit():
+                try:
+                    uptime_s = int(uptime_token)
+                    # Build a human-readable duration (only when the value is
+                    # non-negative; a negative value means data is corrupted)
+                    if uptime_s >= 0:
+                        days, rem = divmod(uptime_s, 86400)
+                        hours, rem = divmod(rem, 3600)
+                        mins, secs = divmod(rem, 60)
+                        readable = (
+                            f"{days}d {hours:02d}h {mins:02d}m {secs:02d}s"
+                        )
+                        details_parts.append(
+                            f"Uptime: {uptime_s}s ({readable})"
+                        )
+                    else:
+                        details_parts.append(f"Uptime: {uptime_s}s (raw)")
+                except ValueError:
+                    pass  # malformed: skip rather than emit bad data
         else:
             # Generic: concatenate non-empty Data values
             generic = " ".join(v for v in data.values() if v)[:200]
@@ -3610,11 +3721,8 @@ def parse_system_log(file_path: str) -> ArtifactResult:
 
         details = "; ".join(details_parts) if details_parts else DFIR_MISSING
 
-        flag = ""
-        if eid == "6008":
-            flag = "WARNING"
-        elif eid == "41":
-            flag = "HIGH RISK"
+        flag, sev_reason = _classify_system_event_severity(
+            eid, details_parts, _sev_context)
 
         result.rows.append(ArtifactRow(
             fields={
@@ -3626,6 +3734,7 @@ def parse_system_log(file_path: str) -> ArtifactResult:
                 "Details":   details,
             },
             flag=flag,
+            reason=sev_reason,
         ))
 
     # Sort: most-recent first
@@ -4087,11 +4196,11 @@ ALL_ARTIFACTS: List[ArtifactDefinition] = [
         forensic_question="What inbound or outbound rules are present?",
         extractor=extract_firewall_rules),
     ArtifactDefinition(
-        name="Open Ports", category="7. Network Activity",
+        name="Firewall-Defined Allowed Ports (Registry)", category="7. Network Activity",
         required_hive=HiveType.SYSTEM,
         key_path=r"CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules",
-        forensic_value="Listening services and exposed network ports.",
-        forensic_question="Which ports are exposed to the network?",
+        forensic_value="Firewall rules that explicitly allow a port (Allow action, explicit LPort or RPort). These are registry-stored configured rules, not confirmed active network connections.",
+        forensic_question="Which ports does the firewall ruleset explicitly allow? (Note: these are configured rules, not confirmed live sockets.)",
         extractor=extract_firewall_open_ports),
 ]
 
